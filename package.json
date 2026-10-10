@@ -1,0 +1,33 @@
+{
+  "name": "reap-bounded-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Bounded Agent Runtime - a programmable economic-authority layer for autonomous agents on Reap Agentic Payments",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20.11"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "test:e2e": "node --test --experimental-strip-types \"packages/provider/test/e2e/*.test.ts\"",
+    "verify": "npm run typecheck && npm run lint && npm run test",
+    "dev:server": "npm run dev --workspace @bounded/server",
+    "dev:dashboard": "npm run dev --workspace @bounded/dashboard",
+    "publish:remote": "bash scripts/publish-remote.sh"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "eslint": "^9.17.0",
+    "tsx": "^4.23.15",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.18.1"
+  }
+}

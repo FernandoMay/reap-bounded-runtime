@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# Environment and secrets — NEVER commit these.
+# The runtime reads REAP_API_KEY and friends from here only.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local database
+data/
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+
+# Verification artefacts may embed sandbox identifiers, never credentials
+docs/evidence/*.local.*
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
