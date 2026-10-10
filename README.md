@@ -58,6 +58,34 @@ Run the walkthrough:
 RUNTIME_API_TOKEN=$(grep RUNTIME_API_TOKEN .env | cut -d= -f2) ./scripts/e2e.sh
 ```
 
+### Getting sandbox credentials
+
+There is **no self-serve signup**. Reap's quickstart says it directly:
+*"Contact the Reap team to get your sandbox credentials. You'll receive an API
+key and base URL for your environment."*
+
+Three separate things are needed, from two different places:
+
+| What | Where it comes from |
+| --- | --- |
+| `REAP_API_KEY` | Reap, sent privately per team for the buildathon. Ask the buildathon organizers — it is not in the docs, the group chat, or any repo |
+| `RUNTIME_API_TOKEN` | **You generate it.** `openssl rand -hex 32`. This is this project's own API token, nothing to do with Reap |
+| Enrollment id | Created through Reap's hosted card-entry page, with a person. Not something you can obtain with curl |
+
+You will also need **Agentic Payments enabled on your project**, which Reap
+switches on for your key.
+
+When the key arrives, check it before anything else:
+
+```bash
+./scripts/check-sandbox.sh
+```
+
+It makes two cheap authenticated calls and distinguishes the four ways this
+can go wrong — bad key, wrong environment, host not serving, feature not
+enabled — so you are not reverse-engineering a bare `401`. It deliberately
+touches no merchant.
+
 ## Architecture
 
 ```
@@ -310,6 +338,7 @@ including the ten real bugs these tests caught.
 | Document | Contents |
 | --- | --- |
 | [`docs/reap-contract.md`](docs/reap-contract.md) | The provider contract as implemented, the `shippingAddress` trap, merchant-identity limits, and the full error taxonomy |
+| [`docs/decisions.md`](docs/decisions.md) | Delegated decisions and their reasoning: budget window anchoring, amount-semantics strictness |
 | [`docs/evidence/README.md`](docs/evidence/README.md) | Every command run, its result, what it does not prove, and the bugs found |
 | [Reap docs](https://docs.reap.global/agentic-payments/overview) | Upstream provider documentation |
 
