@@ -65,6 +65,25 @@ const QUOTE_RESPONSE = {
   expiresAt: '2026-10-10T03:00:00.000Z',
 };
 
+/**
+ * The same quote under the MINOR interpretation: integer counts of minor units.
+ *
+ * A separate fixture is required rather than a flag on the shared one, because
+ * the two interpretations disagree about the wire format itself. Under MINOR a
+ * fractional amount is a protocol violation, and the client rejects it — which
+ * is what makes the distinction observable instead of theoretical.
+ */
+const QUOTE_RESPONSE_MINOR = {
+  ...QUOTE_RESPONSE,
+  amountBreakdown: {
+    ...QUOTE_RESPONSE.amountBreakdown,
+    itemsSubtotal: { amount: 1850, currency: 'USD' },
+    shipping: { amount: 500, currency: 'USD' },
+    tax: { amount: { amount: 135, currency: 'USD' }, includedInPrices: false },
+    finalAmount: { amount: 2485, currency: 'USD' },
+  },
+};
+
 const CHECKOUT_PENDING = {
   id: 'cko_abc123',
   status: 'REQUIRES_ACTION',
@@ -198,14 +217,97 @@ describe('amount parsing', () => {
   });
 
   test('reads a minor-unit amount when configured that way', async () => {
+    // Note this asserts against a MINOR fixture. The previous version of this
+    // test reused the MAJOR fixture and passed for the wrong reason: the client
+    // was ignoring the semantics setting for quotes entirely.
     const config = defineReapConfig({ ...CONFIG, amountSemantics: 'MINOR' });
-    const { fetchImpl } = stubFetch([{ status: 200, body: QUOTE_RESPONSE }]);
+    const { fetchImpl } = stubFetch([{ status: 200, body: QUOTE_RESPONSE_MINOR }]);
     const quote = await providerWith(fetchImpl, config).createQuote({
       items: [{ variantId: 'var_1', quantity: 1 }],
       email: 'b@example.com',
       idempotencyKey: 'k1',
     });
     assert.equal(quote.amountBreakdown.finalAmount.minor, 2485n);
+    assert.equal(toMajorString(quote.amountBreakdown.finalAmount), '24.85');
+  });
+
+  test('the two interpretations of the same wire value differ by 100x', async () => {
+    // Guards the assumption the whole module rests on: if Reap ever sends minor
+    // units, this client must not silently report a hundredfold-too-large sum.
+    const asMajor = stubFetch([{ status: 200, body: QUOTE_RESPONSE }]);
+    const major = await providerWith(asMajor.fetchImpl).createQuote({
+      items: [{ variantId: 'var_1', quantity: 1 }],
+      email: 'b@example.com',
+      idempotencyKey: 'k1',
+    });
+
+    const asMinor = stubFetch([{ status: 200, body: QUOTE_RESPONSE_MINOR }]);
+    const minor = await providerWith(
+      asMinor.fetchImpl,
+      defineReapConfig({ ...CONFIG, amountSemantics: 'MINOR' }),
+    ).createQuote({
+      items: [{ variantId: 'var_1', quantity: 1 }],
+      email: 'b@example.com',
+      idempotencyKey: 'k1',
+    });
+
+    assert.equal(major.amountBreakdown.finalAmount.minor, 2485n);
+    assert.equal(minor.amountBreakdown.finalAmount.minor, 2485n);
+  });
+
+  test('rejects a fractional amount under MINOR, since minor units are integers', async () => {
+    // Accepting 24.85 as 2485 minor units would be a guess. Failing loudly is
+    // the only safe response to a wire format that contradicts the assumption.
+    const config = defineReapConfig({ ...CONFIG, amountSemantics: 'MINOR' });
+    const { fetchImpl } = stubFetch([{ status: 200, body: QUOTE_RESPONSE }]);
+    await assert.rejects(
+      providerWith(fetchImpl, config).createQuote({
+        items: [{ variantId: 'var_1', quantity: 1 }],
+        email: 'b@example.com',
+        idempotencyKey: 'k1',
+      }),
+      ReapProtocolError,
+    );
+  });
+
+  test('applies MINOR semantics to a checkout, not just to a quote', async () => {
+    // Regression. `parseCheckout` used to accept the semantics argument and then
+    // ignore it, calling `fromMajor` on every amount. Under MINOR semantics a
+    // checkout would then report an amount a hundred times too large, and the
+    // existing quote-only test would not have caught it.
+    const config = defineReapConfig({ ...CONFIG, amountSemantics: 'MINOR' });
+    const { fetchImpl } = stubFetch([
+      { status: 200, body: { ...CHECKOUT_PENDING, amount: { amount: 2485, currency: 'USD' } } },
+    ]);
+    const checkout = await providerWith(fetchImpl, config).getCheckout('cko_abc123');
+    assert.equal(checkout.amount.minor, 2485n);
+    assert.equal(toMajorString(checkout.amount), '24.85');
+  });
+
+  test('applies MINOR semantics to variant and product pricing too', async () => {
+    const config = defineReapConfig({ ...CONFIG, amountSemantics: 'MINOR' });
+    const { fetchImpl } = stubFetch([
+      {
+        status: 200,
+        body: {
+          products: [
+            {
+              id: 'prd_1',
+              name: 'Thing',
+              options: [],
+              defaultVariant: {
+                id: 'var_1',
+                price: { amount: 12900, currency: 'USD' },
+                available: true,
+              },
+            },
+          ],
+        },
+      },
+    ]);
+    const details = await providerWith(fetchImpl, config).getProductDetails(['prd_1']);
+    assert.equal(details.products[0]?.defaultVariant?.price.minor, 12900n);
+    assert.equal(toMajorString(details.products[0]!.defaultVariant!.price), '129.00');
   });
 
   test('rejects a quote whose finalAmount is missing', async () => {

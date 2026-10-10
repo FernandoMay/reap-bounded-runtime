@@ -259,7 +259,7 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     return { purchase: serializePurchase(record), audit: service.auditFor(record.id) };
   });
 
-  app.get('/api/purchases', async (request) => ({
+  app.get('/api/purchases', async () => ({
     purchases: service.list(100).map(serializePurchase),
   }));
 
@@ -269,7 +269,7 @@ export function buildServer(options: ServerOptions): FastifyInstance {
    */
   app.post<{ Params: { checkoutId: string } }>(
     '/api/checkouts/:checkoutId/sync',
-    async (request, reply) => {
+    async (request) => {
       const record = await service.sync(request.params.checkoutId);
       return { purchase: serializePurchase(record) };
     },
@@ -331,7 +331,7 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     },
   );
 
-  app.get<{ Params: { enrollmentId: string } }>('/api/enrollments/:enrollmentId', async (request, reply) => {
+  app.get<{ Params: { enrollmentId: string } }>('/api/enrollments/:enrollmentId', async (request) => {
     const enrollment = await options.provider.getEnrollment(request.params.enrollmentId);
     return { enrollment };
   });

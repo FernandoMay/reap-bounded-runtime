@@ -41,7 +41,6 @@ import type {
   ProductDetail,
   ProductDetailsResponse,
   SearchProductsInput,
-  SearchResult,
   SearchResult as SearchResultType,
   Variant,
 } from '../types.js';
@@ -82,7 +81,20 @@ function toMoney(raw: ReapAmount, semantics: ReapConfig['amountSemantics']): Mon
   return fromMajor(String(raw.amount), raw.currency);
 }
 
-function readAmount(value: unknown, path: string): Money {
+/**
+ * Read an amount from a response.
+ *
+ * Routes through `toMoney` so the configured semantics apply uniformly. This
+ * previously called `fromMajor` unconditionally, which meant
+ * `REAP_AMOUNT_SEMANTICS=MINOR` was honoured on quotes and silently ignored on
+ * checkouts — a checkout amount would then be one hundred times too large, with
+ * nothing to indicate why.
+ */
+function readAmount(
+  value: unknown,
+  path: string,
+  semantics: ReapConfig['amountSemantics'],
+): Money {
   if (typeof value !== 'object' || value === null) {
     throw new ReapProtocolError(`expected an amount object at ${path}`);
   }
@@ -90,7 +102,7 @@ function readAmount(value: unknown, path: string): Money {
   if (amount === undefined || typeof currency !== 'string') {
     throw new ReapProtocolError(`amount at ${path} is missing "amount" or "currency"`);
   }
-  return fromMajor(String(amount), currency);
+  return toMoney({ amount, currency }, semantics);
 }
 
 function readShippingOptions(value: unknown, semantics: ReapConfig['amountSemantics']): ShippingOption[] {
@@ -131,7 +143,7 @@ function parseQuote(body: unknown, semantics: ReapConfig['amountSemantics']): Qu
 
   // `finalAmount` is the number the human is shown and the number that matters
   // for policy. It is required by the schema; anything else would be a guess.
-  const finalAmount = readAmount(bd['finalAmount'], 'amountBreakdown.finalAmount');
+  const finalAmount = readAmount(bd['finalAmount'], 'amountBreakdown.finalAmount', semantics);
 
   return {
     id: record['id'],
@@ -140,10 +152,10 @@ function parseQuote(body: unknown, semantics: ReapConfig['amountSemantics']): Qu
     merchant: { name: UNRESOLVED_MERCHANT },
     amountBreakdown: {
       finalAmount,
-      ...(bd['itemsSubtotal'] ? { itemsSubtotal: readAmount(bd['itemsSubtotal'], 'itemsSubtotal') } : {}),
-      ...(bd['shipping'] ? { shipping: readAmount(bd['shipping'], 'shipping') } : {}),
+      ...(bd['itemsSubtotal'] ? { itemsSubtotal: readAmount(bd['itemsSubtotal'], 'itemsSubtotal', semantics) } : {}),
+      ...(bd['shipping'] ? { shipping: readAmount(bd['shipping'], 'shipping', semantics) } : {}),
       ...(typeof bd['tax'] === 'object' && bd['tax'] !== null
-        ? { tax: readAmount((bd['tax'] as Record<string, unknown>)['amount'], 'tax.amount') }
+        ? { tax: readAmount((bd['tax'] as Record<string, unknown>)['amount'], 'tax.amount', semantics) }
         : {}),
     },
     shippingOptions: readShippingOptions(record['shippingOptions'], semantics),
@@ -177,14 +189,14 @@ function parseCheckout(body: unknown, semantics: ReapConfig['amountSemantics']):
     quoteId: typeof record['quoteId'] === 'string' ? record['quoteId'] : '',
     enrollmentId: typeof record['enrollmentId'] === 'string' ? record['enrollmentId'] : '',
     status: record['status'],
-    amount: readAmount(record['amount'], 'amount'),
+    amount: readAmount(record['amount'], 'amount', semantics),
     // The approval URL is the whole point of the human-in-the-loop design, so
     // its absence while status is REQUIRES_ACTION is a protocol violation worth
     // failing loudly on rather than a silently unusable checkout.
     ...(nextActionUrl ? { approvalUrl: nextActionUrl } : {}),
     ...(typeof nextActionExpiresAt === 'string' ? { expiresAt: nextActionExpiresAt } : {}),
     ...(typeof record['orderId'] === 'string' ? { orderId: record['orderId'] } : {}),
-    ...(record['finalAmount'] ? { finalAmount: readAmount(record['finalAmount'], 'finalAmount') } : {}),
+    ...(record['finalAmount'] ? { finalAmount: readAmount(record['finalAmount'], 'finalAmount', semantics) } : {}),
   };
 }
 
@@ -343,7 +355,7 @@ export class ReapAgenticProvider implements PaymentProvider {
         previewVariant = {
           id: preview['id'],
           name: typeof preview['name'] === 'string' ? preview['name'] : preview['id'],
-          price: readAmount(preview['price'], 'previewVariant.price'),
+          price: readAmount(preview['price'], 'previewVariant.price', this.config.amountSemantics),
           available: preview['available'] !== false,
           requiresShipping: preview['requiresShipping'] === true,
         };
@@ -358,8 +370,8 @@ export class ReapAgenticProvider implements PaymentProvider {
       const priceRange: PriceRange | undefined =
         range && typeof range['min'] === 'object' && typeof range['max'] === 'object'
           ? {
-              min: readAmount(range['min'], 'priceRange.min'),
-              max: readAmount(range['max'], 'priceRange.max'),
+              min: readAmount(range['min'], 'priceRange.min', this.config.amountSemantics),
+              max: readAmount(range['max'], 'priceRange.max', this.config.amountSemantics),
             }
           : undefined;
 
@@ -429,7 +441,7 @@ export class ReapAgenticProvider implements PaymentProvider {
             ? {
                 id: def['id'],
                 name: typeof def['name'] === 'string' ? def['name'] : def['id'],
-                price: readAmount(def['price'], 'defaultVariant.price'),
+                price: readAmount(def['price'], 'defaultVariant.price', this.config.amountSemantics),
                 available: def['available'] !== false,
                 requiresShipping: def['requiresShipping'] === true,
               }
@@ -474,7 +486,7 @@ export class ReapAgenticProvider implements PaymentProvider {
     return {
       id: body['id'],
       name: typeof body['name'] === 'string' ? body['name'] : body['id'],
-      price: readAmount(body['price'], 'price'),
+      price: readAmount(body['price'], 'price', this.config.amountSemantics),
       available: body['available'] !== false,
       requiresShipping: body['requiresShipping'] === true,
     };

@@ -58,13 +58,24 @@ function passesLuhn(digits: string): boolean {
 /** Digit runs of 13-19, optionally grouped by spaces or dashes. */
 const PAN_CANDIDATE = /(?<!\d)(?:\d[ -]?){12,18}\d(?!\d)/g;
 
-function redactPanCandidates(text: string): string {
-  return text.replace(PAN_CANDIDATE, (match) => {
-    const digits = match.replace(/[ -]/g, '');
-    if (digits.length < 13 || digits.length > 19) return match;
-    if (!passesLuhn(digits)) return match;
-    return redactPan(digits);
-  });
+/**
+ * Decide whether one candidate is a card number.
+ *
+ * Returns the match unchanged unless the digit run is both the right length and
+ * Luhn-valid. That is what keeps Reap's own identifiers readable: an order
+ * reference or a timestamp is not a PAN, and redacting those would train
+ * whoever reads the logs to ignore the redaction markers.
+ *
+ * Takes a single candidate rather than running its own global replace, so the
+ * caller controls which pattern applies it. This used to be a string-wide
+ * function duplicated inline in `redactString`, which meant the Luhn rule had two
+ * copies that could drift apart.
+ */
+function redactPanCandidate(match: string): string {
+  const digits = match.replace(/[ -]/g, '');
+  if (digits.length < 13 || digits.length > 19) return match;
+  if (!passesLuhn(digits)) return match;
+  return redactPan(digits);
 }
 
 /** `sk_sbx_...`, `sk_live_...`, and the general `sk_`/`pk_` key shapes. */
@@ -85,12 +96,7 @@ export function redactString(input: string): string {
   return input
     .replace(BEARER_CANDIDATE, `Bearer ${REDACTED}`)
     .replace(API_KEY_CANDIDATE, REDACTED)
-    .replace(PAN_CANDIDATE, (match) => {
-      const digits = match.replace(/[ -]/g, '');
-      if (digits.length < 13 || digits.length > 19) return match;
-      if (!passesLuhn(digits)) return match;
-      return redactPan(digits);
-    });
+    .replace(PAN_CANDIDATE, (match) => redactPanCandidate(match));
 }
 
 /**

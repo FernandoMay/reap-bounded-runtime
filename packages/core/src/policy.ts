@@ -30,8 +30,11 @@ import type {
 
 /** Reap's documented caps, enforced before a quote is ever attempted. */
 const MAX_ITEMS = 20;
+// Transcribed from Reap's documented `email` pattern. A `-` placed last in a
+// character class is unambiguously literal; escaping it mid-class is easy to get
+// wrong, and getting it wrong silently changes which addresses validate.
 const EMAIL_PATTERN =
-  /^(?!\.)(?!.*\.\.)([A-Za-z0-9_'+\-.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\-]*\.)+[A-Za-z]{2,}$/;
+  /^(?!\.)(?!.*\.\.)([A-Za-z0-9_'+.-]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9-]*\.)+[A-Za-z]{2,}$/;
 /** From the documented `phone` schema: `^\+[1-9]\d{6,14}$`. */
 const PHONE_PATTERN = /^\+[1-9]\d{6,14}$/;
 
