@@ -1,0 +1,79 @@
+/**
+ * Process entry point.
+ *
+ * Configuration is resolved and validated before anything binds a port. A
+ * runtime that starts with a missing API key and fails on the first purchase is
+ * worse than one that refuses to start, because the failure looks like a
+ * provider outage.
+ */
+
+import { existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
+import { createProvider, loadReapConfig, loadRuntimeSettings } from '@bounded/provider';
+
+import { buildServer } from './server.js';
+import { Store } from './store.js';
+import { seedDemoAgent } from './seed.js';
+
+/** Minimal .env loader, so local runs do not need an extra dependency. */
+function loadDotEnv(): void {
+  const path = resolve(process.cwd(), '.env');
+  if (!existsSync(path)) return;
+
+  for (const line of readFileSync(path, 'utf8').split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed === '' || trimmed.startsWith('#')) continue;
+    const separator = trimmed.indexOf('=');
+    if (separator === -1) continue;
+
+    const key = trimmed.slice(0, separator).trim();
+    let value = trimmed.slice(separator + 1).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+    // A real environment variable always wins over the file.
+    if (process.env[key] === undefined) process.env[key] = value;
+  }
+}
+
+async function main(): Promise<void> {
+  loadDotEnv();
+
+  const settings = loadRuntimeSettings();
+  const reapConfig = settings.mode === 'sandbox' ? loadReapConfig() : undefined;
+  const { provider, mode } = createProvider(reapConfig);
+
+  const store = new Store(settings.databasePath);
+  store.setMeta('mode', mode);
+
+  // A demo agent exists so the runtime is usable the moment it starts. Its
+  // policy is deliberately tight: the defaults should refuse most things.
+  seedDemoAgent(store);
+
+  const app = buildServer({
+    store,
+    provider,
+    mode,
+    apiToken: settings.apiToken,
+    logLevel: settings.logLevel,
+  });
+
+  await app.listen({ port: settings.port, host: settings.host });
+
+  app.log.info(
+    { mode, provider: provider.description, database: settings.databasePath },
+    mode === 'mock'
+      ? 'Bounded Agent Runtime started in MOCK mode. No network calls, no real charges.'
+      : 'Bounded Agent Runtime started in SANDBOX mode against Reap.',
+  );
+}
+
+main().catch((error: unknown) => {
+  const message = error instanceof Error ? error.message : String(error);
+  process.stderr.write(`Failed to start: ${message}\n`);
+  process.exitCode = 1;
+});

@@ -33,6 +33,13 @@ describe('canTransition', () => {
     assert.equal(canTransition('CHECKOUT_PENDING', 'RECEIVED'), false);
   });
 
+  test('permits a checkout that completes without PROCESSING being observed', () => {
+    // Polling is not atomic. A purchase approved and settled between two reads
+    // is reported COMPLETED without the runtime ever seeing PROCESSING, and
+    // refusing that edge would strand it in CHECKOUT_PENDING forever.
+    assert.ok(canTransition('CHECKOUT_PENDING', 'COMPLETED'));
+  });
+
   test('treats every terminal state as final', () => {
     const all: PurchaseState[] = [
       'RECEIVED',

@@ -101,6 +101,11 @@ export function redactString(input: string): string {
  */
 export function redactValue(input: unknown, seen = new WeakSet<object>()): unknown {
   if (typeof input === 'string') return redactString(input);
+  // bigint is a number as far as callers are concerned, and every monetary
+  // amount in this runtime is a bigint. JSON.stringify throws on it by default,
+  // which would mean an audit event containing an amount silently fails to
+  // write. Emit a decimal string instead.
+  if (typeof input === 'bigint') return input.toString();
   if (input === null || typeof input !== 'object') return input;
 
   if (seen.has(input as object)) return '[Circular]';

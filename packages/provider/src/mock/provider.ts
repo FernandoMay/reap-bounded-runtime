@@ -23,7 +23,9 @@
 
 import {
   fromMajor,
+  UNRESOLVED_MERCHANT,
   type Checkout,
+  type Merchant,
   type Money,
   type Quote,
   type ShippingAddress,
@@ -130,6 +132,15 @@ export class MockProvider implements PaymentProvider {
 
   private readonly quoteTtlMs: number;
   private readonly now: () => number;
+
+  /**
+   * Merchant provenance, mirroring the Reap client's behaviour.
+   *
+   * The mock resolves provenance from its own catalog rather than only
+   * populating it during search, so a caller can quote a known variant directly
+   * — exactly as a real integration would after a discovery step, and for the
+   * same reason: the merchant allowlist has nothing to check without it.
+   */
   private readonly provenance = new Map<string, string>();
 
   private readonly quotes = new Map<
@@ -147,6 +158,10 @@ export class MockProvider implements PaymentProvider {
   constructor(private readonly options: MockProviderOptions = {}) {
     this.quoteTtlMs = options.quoteTtlMs ?? 15 * 60 * 1000;
     this.now = options.now ?? (() => Date.now());
+    // Seeded from the catalog so provenance exists before any search runs.
+    for (const product of CATALOG) {
+      this.provenance.set(product.variantId, product.merchant);
+    }
     // An ACTIVE enrollment exists so the checkout path is reachable without
     // first walking the hosted card-entry flow.
     this.enrollments.set('enr_mock_active', {
@@ -163,6 +178,27 @@ export class MockProvider implements PaymentProvider {
   private nextId(prefix: string): string {
     this.sequence += 1;
     return `${prefix}_mock_${String(this.sequence).padStart(6, '0')}`;
+  }
+
+  /**
+   * Provenance lookup, matching the Reap client's shape.
+   *
+   * The runtime resolves the merchant this way before evaluating the merchant
+   * allowlist, so the mock has to expose it too — otherwise a mock run would
+   * deny every purchase for a reason a sandbox run would not hit.
+   */
+  merchantForVariant(variantId: string): Merchant | undefined {
+    const name = this.provenance.get(variantId);
+    return name ? { name } : undefined;
+  }
+
+  merchantForVariants(variantIds: readonly string[]): Map<string, Merchant> {
+    const out = new Map<string, Merchant>();
+    for (const id of variantIds) {
+      const merchant = this.merchantForVariant(id);
+      if (merchant) out.set(id, merchant);
+    }
+    return out;
   }
 
   async searchProducts(input: SearchProductsInput): Promise<{
@@ -277,7 +313,7 @@ export class MockProvider implements PaymentProvider {
 
     const quote: Quote = {
       id: this.nextId('qte'),
-      merchant: { name: this.provenance.get(catalogItems[0]?.product.variantId ?? '') ?? '(unresolved)' },
+      merchant: { name: this.provenance.get(catalogItems[0]?.product.variantId ?? '') ?? UNRESOLVED_MERCHANT },
       amountBreakdown: { itemsSubtotal, shipping, tax, finalAmount },
       shippingOptions: [
         { id: 'shp_standard', name: 'Standard', selected: true, price: shipping },
@@ -290,7 +326,7 @@ export class MockProvider implements PaymentProvider {
       quote,
       items: input.items,
       scenario,
-      merchant: catalogItems[0]?.product.merchant ?? '(unresolved)',
+      merchant: catalogItems[0]?.product.merchant ?? UNRESOLVED_MERCHANT,
     });
     return quote;
   }

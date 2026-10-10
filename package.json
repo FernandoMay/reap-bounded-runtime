@@ -24,6 +24,7 @@
     "publish:remote": "bash scripts/publish-remote.sh"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^22.10.2",
     "eslint": "^9.17.0",
     "tsx": "^4.23.15",

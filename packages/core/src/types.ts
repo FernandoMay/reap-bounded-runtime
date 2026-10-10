@@ -10,6 +10,17 @@
 import type { Money } from './money.js';
 
 /**
+ * Placeholder used when a provider does not disclose the merchant for a quote.
+ *
+ * Reap's quote response contains no merchant field at all. Rather than leave
+ * the field empty — where an empty string and a real merchant name are hard to
+ * tell apart — the value is set to this explicit sentinel. It must never reach
+ * the policy engine as though it were a merchant name: that would turn "we do
+ * not know which merchant this is" into a passing allowlist check.
+ */
+export const UNRESOLVED_MERCHANT = '(unresolved)';
+
+/**
  * A merchant, as far as the provider discloses it.
  *
  * Reap's discovery responses expose only `merchant.name`. The quote response

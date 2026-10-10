@@ -27,6 +27,7 @@ import {
   type Quote,
   type ShippingAddress,
   type ShippingOption,
+  UNRESOLVED_MERCHANT,
 } from '@bounded/core';
 
 import type { ReapConfig } from '../config.js';
@@ -136,7 +137,7 @@ function parseQuote(body: unknown, semantics: ReapConfig['amountSemantics']): Qu
     id: record['id'],
     // Reap does not include the merchant on a quote, so the runtime carries
     // provenance from the search step instead. See `MerchantProvenance`.
-    merchant: { name: '(unresolved)' },
+    merchant: { name: UNRESOLVED_MERCHANT },
     amountBreakdown: {
       finalAmount,
       ...(bd['itemsSubtotal'] ? { itemsSubtotal: readAmount(bd['itemsSubtotal'], 'itemsSubtotal') } : {}),
@@ -254,7 +255,16 @@ export class ReapAgenticProvider implements PaymentProvider {
   readonly kind = 'sandbox' as const;
   readonly description: string;
 
-  /** variantId -> merchant, learned during discovery. Reap does not report it on quotes. */
+  /**
+   * variantId -> merchant, learned during discovery.
+   *
+   * Reap's quote response contains no merchant at all, and its search response
+   * contains only `merchant.name`. This map is therefore the runtime's only
+   * record of which merchant a given purchasable artifact belongs to, and it is
+   * what makes the merchant allowlist enforceable. When it is empty the policy
+   * engine sees an unknown merchant and denies, which is the correct outcome:
+   * an allowlist cannot be checked against nothing.
+   */
   private readonly provenance = new Map<string, Merchant>();
 
   constructor(
@@ -273,6 +283,21 @@ export class ReapAgenticProvider implements PaymentProvider {
 
   merchantForVariant(variantId: string): Merchant | undefined {
     return this.provenance.get(variantId);
+  }
+
+  /** Batched lookup, so the runtime can resolve provenance for a whole cart. */
+  merchantForVariants(variantIds: readonly string[]): Map<string, Merchant> {
+    const out = new Map<string, Merchant>();
+    for (const id of variantIds) {
+      const merchant = this.provenance.get(id);
+      if (merchant) out.set(id, merchant);
+    }
+    return out;
+  }
+
+  /** @internal Exposed for the runtime's provenance lookup. */
+  get [Symbol.toStringTag](): string {
+    return 'ReapAgenticProvider';
   }
 
   async searchProducts(input: SearchProductsInput): Promise<{
@@ -479,7 +504,7 @@ export class ReapAgenticProvider implements PaymentProvider {
     const remembered = input.items
       .map((item) => this.provenance.get(item.variantId))
       .find((m): m is Merchant => m !== undefined);
-    return { ...quote, merchant: remembered ?? { name: '(unresolved)' } };
+    return { ...quote, merchant: remembered ?? { name: UNRESOLVED_MERCHANT } };
   }
 
   async getQuote(quoteId: string): Promise<Quote> {

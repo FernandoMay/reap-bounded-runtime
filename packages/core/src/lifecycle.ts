@@ -19,7 +19,12 @@ const TRANSITIONS: Readonly<Record<PurchaseState, readonly PurchaseState[]>> = {
   RECEIVED: ['POLICY_DENIED', 'QUOTED'],
   POLICY_DENIED: [],
   QUOTED: ['CHECKOUT_PENDING', 'EXPIRED', 'FAILED'],
-  CHECKOUT_PENDING: ['PROCESSING', 'EXPIRED', 'FAILED'],
+  // PROCESSING is the documented intermediate, but it is not guaranteed to be
+  // observed. Polling is not atomic: a purchase approved and settled between two
+  // reads goes straight from REQUIRES_ACTION to COMPLETED. Forbidding that edge
+  // would strand such a purchase in CHECKOUT_PENDING forever, with a provider
+  // status it could never accept.
+  CHECKOUT_PENDING: ['PROCESSING', 'COMPLETED', 'EXPIRED', 'FAILED'],
   PROCESSING: ['COMPLETED', 'FAILED'],
   COMPLETED: [],
   FAILED: [],
