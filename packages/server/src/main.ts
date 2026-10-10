@@ -8,7 +8,7 @@
  */
 
 import { existsSync, readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 import { createProvider, loadReapConfig, loadRuntimeSettings } from '@bounded/provider';
 
@@ -16,10 +16,17 @@ import { buildServer } from './server.js';
 import { Store } from './store.js';
 import { seedDemoAgent } from './seed.js';
 
-/** Minimal .env loader, so local runs do not need an extra dependency. */
+/**
+ * Minimal .env loader, so local runs do not need an extra dependency.
+ *
+ * Searches upward from the working directory. Workspace scripts run with the
+ * package directory as cwd, so a single `./.env` lookup would miss the file at
+ * the repository root and the runtime would refuse to start for a reason that
+ * looks like a missing credential.
+ */
 function loadDotEnv(): void {
-  const path = resolve(process.cwd(), '.env');
-  if (!existsSync(path)) return;
+  const path = findUpward('.env');
+  if (!path) return;
 
   for (const line of readFileSync(path, 'utf8').split('\n')) {
     const trimmed = line.trim();
@@ -37,6 +44,18 @@ function loadDotEnv(): void {
     }
     // A real environment variable always wins over the file.
     if (process.env[key] === undefined) process.env[key] = value;
+  }
+}
+
+/** Walk up from `start` looking for `name`, stopping at the filesystem root. */
+function findUpward(name: string, start: string = process.cwd()): string | undefined {
+  let dir = resolve(start);
+  for (;;) {
+    const candidate = join(dir, name);
+    if (existsSync(candidate)) return candidate;
+    const parent = dirname(dir);
+    if (parent === dir) return undefined;
+    dir = parent;
   }
 }
 

@@ -51,6 +51,26 @@ export type MockScenario =
   | 'checkout_fails' // charge is attempted and fails
   | 'not_enabled'; // 403, Agentic Payments is off for the key
 
+/**
+ * Operator-facing guidance, mirroring `ReapApiError.remedy`.
+ *
+ * The mock exists so the runtime can be developed without a provider, and a
+ * failure that only says `QUOTE_UNFULFILLABLE` makes the mock useless for the
+ * thing it is actually for: understanding what the real integration will do.
+ */
+const REMEDY: Readonly<Record<string, string>> = {
+  QUOTE_UNFULFILLABLE:
+    'The mock merchant refused to price this cart. Real merchants commonly reject a shipping address missing region or addressLine2.',
+  AGENTIC_RESOURCE_NOT_FOUND:
+    'The referenced resource does not exist. In mock mode only the built-in catalog variants and seeded enrollments resolve.',
+  AGENTIC_REQUEST_REJECTED: 'The request was rejected. Correct the payload before retrying.',
+  AGENTIC_PAYMENTS_NOT_ENABLED:
+    'Simulated a project without Agentic Payments enabled. Against a real key this means the feature must be turned on by Reap.',
+  QUOTE_EXPIRED: 'The quote expired. Create a new quote; mock quotes live for 15 minutes.',
+  VARIANT_UNAVAILABLE: 'The selected variant is sold out. Choose another variant.',
+  CARD_PAYMENT_UNAVAILABLE: 'Card payment is unavailable for this checkout.',
+};
+
 export class MockProviderError extends Error {
   override readonly name = 'MockProviderError';
   constructor(
@@ -62,9 +82,23 @@ export class MockProviderError extends Error {
     /** Human-readable explanation, so a failure is not just a code. */
     message?: string,
   ) {
-    super(message ?? code);
+    super(message ?? MOCK_MESSAGES[code] ?? code);
+  }
+
+  get remedy(): string {
+    return REMEDY[this.code] ?? 'The mock provider failed this call.';
   }
 }
+
+const MOCK_MESSAGES: Readonly<Record<string, string>> = {
+  QUOTE_UNFULFILLABLE: 'The merchant cannot fulfill this quote as requested',
+  AGENTIC_RESOURCE_NOT_FOUND: 'The requested resource does not exist',
+  AGENTIC_REQUEST_REJECTED: 'The request was rejected',
+  AGENTIC_PAYMENTS_NOT_ENABLED: 'Agentic Payments is not enabled for this project',
+  QUOTE_EXPIRED: 'The quote has expired',
+  VARIANT_UNAVAILABLE: 'The selected item is sold out',
+  CARD_PAYMENT_UNAVAILABLE: 'Card payment is unavailable for this checkout',
+};
 
 interface MockProduct {
   readonly id: string;

@@ -364,9 +364,15 @@ export class Store {
   // --- runtime metadata ----------------------------------------------------
 
   setMeta(key: string, value: string): void {
+    // Named parameters throughout. The upsert clause also references `@value`,
+    // and mixing positional and named placeholders in one statement leaves that
+    // reference unbound.
     this.db
-      .prepare('INSERT INTO runtime_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = @value')
-      .run(key, value);
+      .prepare(
+        `INSERT INTO runtime_meta (key, value) VALUES (@key, @value)
+         ON CONFLICT(key) DO UPDATE SET value = @value`,
+      )
+      .run({ key, value });
   }
 
   getMeta(key: string): string | undefined {
