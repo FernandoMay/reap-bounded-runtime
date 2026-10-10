@@ -36,6 +36,9 @@ import {
   type RuntimeMode,
 } from '@bounded/core';
 
+/** The window shapes `Policy.budgetWindow` can take. */
+type BudgetWindow = NonNullable<Policy['budgetWindow']>;
+
 /**
  * JSON encoding for anything that crosses into SQLite or the audit trail.
  *
@@ -124,6 +127,37 @@ export interface Agent {
   readonly id: string;
   readonly name: string;
   readonly policy: Policy;
+}
+
+/**
+ * The start of the current budget window, or `undefined` for a lifetime budget.
+ *
+ * Windows are anchored on calendar boundaries in UTC rather than on a rolling
+ * interval from first use. Both readings of "monthly budget" exist, but a
+ * calendar month is the one an operator can check against a statement, and a
+ * rolling window that resets the moment the agent spends would be surprising to
+ * reconcile. UTC keeps the boundary identical for every deployment regardless
+ * of where it runs.
+ */
+export function windowStart(window: BudgetWindow, now: Date): Date | undefined {
+  switch (window) {
+    case 'LIFETIME':
+      return undefined;
+    case 'DAY':
+      return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    case 'WEEK': {
+      // ISO weeks start on Monday, which is why the shift is (day + 6) % 7.
+      const midnight = new Date(
+        Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
+      );
+      midnight.setUTCDate(midnight.getUTCDate() - ((midnight.getUTCDay() + 6) % 7));
+      return midnight;
+    }
+    case 'MONTH':
+      return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+    default:
+      return undefined;
+  }
 }
 
 export class Store {
@@ -295,30 +329,35 @@ export class Store {
    * the same instant each pass an application-level check against `settled`
    * alone, then together exceed the budget. Counting the second one as reserved
    * makes the second check fail.
-   */
-  /**
-   * Totals that consume one agent's budget.
    *
-   * Scoped by `agent_id` as well as currency. A budget is granted to an agent,
-   * so another agent's purchases must not count against it: without this filter
-   * one agent's spending silently exhausts every other agent's budget, which is
-   * both a correctness bug and a denial-of-service vector between tenants.
+   * Scoped by window as well. Without the `created_at` cutoff a MONTH budget
+   * kept counting purchases from previous months, so the ceiling drifted upward
+   * without bound and stopped being a ceiling at all.
    */
-  budgetUsage(agentId: string, currency: string): { settled: Money; reserved: Money } {
+  budgetUsage(
+    agentId: string,
+    currency: string,
+    window: BudgetWindow = 'LIFETIME',
+    now: Date = new Date(),
+  ): { settled: Money; reserved: Money; since: string | null } {
+    const since = windowStart(window, now)?.toISOString() ?? null;
+
     const settledRows = this.db
       .prepare(
         `SELECT reserved_amount AS amount FROM purchases
-         WHERE state = 'COMPLETED' AND reserved_currency = ? AND agent_id = ?`,
+         WHERE state = 'COMPLETED' AND reserved_currency = ? AND agent_id = ?
+           AND (? IS NULL OR created_at >= ?)`,
       )
-      .all(currency, agentId) as Array<{ amount: string }>;
+      .all(currency, agentId, since, since) as Array<{ amount: string }>;
 
     const reservedRows = this.db
       .prepare(
         `SELECT reserved_amount AS amount FROM purchases
          WHERE state IN ('RECEIVED', 'QUOTED', 'CHECKOUT_PENDING', 'PROCESSING')
-           AND reserved_currency = ? AND agent_id = ?`,
+           AND reserved_currency = ? AND agent_id = ?
+           AND (? IS NULL OR created_at >= ?)`,
       )
-      .all(currency, agentId) as Array<{ amount: string }>;
+      .all(currency, agentId, since, since) as Array<{ amount: string }>;
 
     // Totalled through the money module, never by multiplying a parsed float by
     // 100. The stored value is the exact decimal the provider quoted, and
@@ -332,6 +371,7 @@ export class Store {
     return {
       settled: { minor: total(settledRows), currency },
       reserved: { minor: total(reservedRows), currency },
+      since,
     };
   }
 

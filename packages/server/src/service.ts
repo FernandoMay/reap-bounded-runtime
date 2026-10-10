@@ -239,8 +239,15 @@ export class PurchaseService {
     //    here would evaluate the allowlist against "(unresolved)" and refuse
     //    every legitimate purchase while appearing to enforce a limit.
     const merchant = this.resolveMerchant(request.intent.items, quote.merchant);
+    // Budget usage is read inside the same clock the service uses, so a test
+    // that injects a fixed time also controls which window is in effect.
     const budget = agent.policy.budget
-      ? this.store.budgetUsage(agent.id, agent.policy.budget.currency)
+      ? this.store.budgetUsage(
+          agent.id,
+          agent.policy.budget.currency,
+          agent.policy.budgetWindow ?? 'LIFETIME',
+          this.now(),
+        )
       : undefined;
 
     const decision = evaluatePolicy({

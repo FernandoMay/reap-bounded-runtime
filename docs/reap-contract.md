@@ -125,6 +125,16 @@ becomes exactly `14285` minor units. Setting the variable to `MINOR` flips the
 interpretation without a code change if the assumption is ever disproved
 against live data.
 
+The two interpretations are applied uniformly. An earlier version of the client
+honoured the setting for quotes and silently ignored it for checkouts, which
+would have reported checkout amounts 100x too large under `MINOR`.
+
+Under `MINOR`, a fractional amount is **rejected** rather than converted:
+minor units are integers by definition, so receiving `24.85` means the wire
+format contradicts the configured interpretation. Failing loudly is the only
+safe response — scaling a fractional value by assumption is precisely the kind
+of quiet 100x error this module exists to prevent.
+
 ## Statuses
 
 Enrollment:

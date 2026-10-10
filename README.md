@@ -22,9 +22,10 @@ All purchases are sandbox simulations: nothing ships and no money moves.
 
 | | |
 | --- | --- |
-| Unit and integration tests | 179 passing, 0 failing |
+| Unit and integration tests | 196 passing, 0 failing |
 | End-to-end walkthrough (mock) | 20 assertions passing |
 | Typecheck | clean across all four packages |
+| Lint | clean, ESLint flat config |
 | **Real Reap sandbox calls** | **none — see [verification evidence](docs/evidence/README.md)** |
 
 The runtime is complete and exercised end to end against a fixture provider
@@ -119,7 +120,7 @@ dashboard or by a calling agent.
 | `allowedCurrencies` | Currencies the agent may operate in |
 | `merchantAllowlist` | Matched against merchant name, or domain when known |
 | `variantAllowlist` | Exact variant ids the agent may buy |
-| `budget` / `budgetWindow` | Cumulative ceiling counting in-flight reservations |
+| `budget` / `budgetWindow` | Cumulative ceiling counting in-flight reservations, scoped to the current window |
 
 Every decision returns a machine-readable code and **every rule's result**, not
 just the first failure:
@@ -258,15 +259,16 @@ A five-minute walkthrough that shows the product rather than the code.
 ## Testing
 
 ```bash
-npm test          # 179 tests across core, provider and server
+npm test          # 196 tests across core, provider and server
 npm run typecheck # all four packages
+npm run lint      # ESLint flat config
 npm run build     # production build
 ./scripts/e2e.sh  # end-to-end walkthrough against a running server
 ```
 
-`npm run lint` is configured in every package but **has no ESLint config file
-yet**, so it does not currently run. It is listed in scripts as a placeholder,
-not as something that passes.
+`./scripts/e2e.sh` needs a running server and `RUNTIME_API_TOKEN` in the
+environment. It asserts on response bodies rather than status codes, so a
+runtime that approved everything would fail it.
 
 ## What is not verified
 
@@ -279,8 +281,9 @@ one that admits its limits:
 - **No enrollment has been created.** That requires a human on Reap's hosted
   card-entry page.
 - `REAP_AMOUNT_SEMANTICS=MAJOR` is inferred from documented examples, not
-  observed.
-- Lint is configured but not runnable.
+  observed. The client now rejects a fractional amount under `MINOR` rather
+  than guessing, so a wrong assumption fails loudly instead of silently
+  mis-scaling by 100x.
 
 See [`docs/evidence/README.md`](docs/evidence/README.md) for the full record,
 including the ten real bugs these tests caught.
@@ -295,8 +298,10 @@ including the ten real bugs these tests caught.
   allowlisted merchant domains.
 - **Mandates are not implemented.** Reap publishes them with
   `MANDATES_AVAILABLE = false`; the endpoints are not live.
-- **Budget windows are not pruned.** `budgetWindow` is recorded, but usage is
-  not yet reset on a schedule.
+- **Budget windows are calendar-anchored, not rolling.** A `MONTH` budget
+  resets on the first of the month in UTC. That is the boundary an operator can
+  reconcile against a statement, but it does mean a budget is not "30 days from
+  when you enabled it".
 - **Single-writer SQLite.** Correct for a single-node runtime; horizontal
   scaling needs a real database and a shared idempotency table.
 
