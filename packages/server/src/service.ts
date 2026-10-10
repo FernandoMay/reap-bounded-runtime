@@ -240,7 +240,7 @@ export class PurchaseService {
     //    every legitimate purchase while appearing to enforce a limit.
     const merchant = this.resolveMerchant(request.intent.items, quote.merchant);
     const budget = agent.policy.budget
-      ? this.store.budgetUsage(agent.policy.budget.currency)
+      ? this.store.budgetUsage(agent.id, agent.policy.budget.currency)
       : undefined;
 
     const decision = evaluatePolicy({

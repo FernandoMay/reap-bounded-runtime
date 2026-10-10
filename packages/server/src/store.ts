@@ -296,21 +296,29 @@ export class Store {
    * alone, then together exceed the budget. Counting the second one as reserved
    * makes the second check fail.
    */
-  budgetUsage(currency: string): { settled: Money; reserved: Money } {
+  /**
+   * Totals that consume one agent's budget.
+   *
+   * Scoped by `agent_id` as well as currency. A budget is granted to an agent,
+   * so another agent's purchases must not count against it: without this filter
+   * one agent's spending silently exhausts every other agent's budget, which is
+   * both a correctness bug and a denial-of-service vector between tenants.
+   */
+  budgetUsage(agentId: string, currency: string): { settled: Money; reserved: Money } {
     const settledRows = this.db
       .prepare(
         `SELECT reserved_amount AS amount FROM purchases
-         WHERE state = 'COMPLETED' AND reserved_currency = ?`,
+         WHERE state = 'COMPLETED' AND reserved_currency = ? AND agent_id = ?`,
       )
-      .all(currency) as Array<{ amount: string }>;
+      .all(currency, agentId) as Array<{ amount: string }>;
 
     const reservedRows = this.db
       .prepare(
         `SELECT reserved_amount AS amount FROM purchases
          WHERE state IN ('RECEIVED', 'QUOTED', 'CHECKOUT_PENDING', 'PROCESSING')
-           AND reserved_currency = ?`,
+           AND reserved_currency = ? AND agent_id = ?`,
       )
-      .all(currency) as Array<{ amount: string }>;
+      .all(currency, agentId) as Array<{ amount: string }>;
 
     // Totalled through the money module, never by multiplying a parsed float by
     // 100. The stored value is the exact decimal the provider quoted, and

@@ -262,6 +262,49 @@ describe('purchase — cumulative budget', () => {
     assert.equal(denied.kind, 'denied');
   });
 
+  test("one agent's spending does not consume another agent's budget", async () => {
+    // Budgets are granted per agent. Without an agent_id filter in the usage
+    // query, an unrelated agent's purchases exhaust this one — a correctness
+    // bug and a cross-tenant denial of service at the same time.
+    const { store, service } = setup(budgetPolicy('30.00'));
+
+    store.upsertAgent(
+      {
+        id: 'noisy-agent',
+        name: 'noisy',
+        policy: {
+          maxAmountPerPurchase: fromMajor('1000.00', 'USD'),
+          budget: fromMajor('10000.00', 'USD'),
+          budgetWindow: 'MONTH',
+          allowedCurrencies: ['USD'],
+          merchantAllowlist: ['Blend Station'],
+        },
+      },
+      new Date().toISOString(),
+    );
+
+    for (let i = 0; i < 3; i += 1) {
+      await service.purchase({
+        agentId: 'noisy-agent',
+        intent: INTENT,
+        idempotencyKey: nextKey(),
+        enrollmentId: ENROLLMENT,
+        returnUrl: RETURN_URL,
+      });
+    }
+
+    // The tested agent has spent nothing, so its own first purchase must fit
+    // inside its own 30 USD budget.
+    const first = await service.purchase({
+      agentId: DEMO_AGENT_ID,
+      intent: INTENT,
+      idempotencyKey: nextKey(),
+      enrollmentId: ENROLLMENT,
+      returnUrl: RETURN_URL,
+    });
+    assert.equal(first.kind, 'awaiting_approval');
+  });
+
   test('a failed purchase releases its reservation', async () => {
     const { service, provider } = setup(budgetPolicy('100.00'));
     const first = await service.purchase({
@@ -434,7 +477,17 @@ describe('provider failures', () => {
         agentId: DEMO_AGENT_ID, intent: INTENT, idempotencyKey: nextKey(),
         enrollmentId: ENROLLMENT, returnUrl: RETURN_URL,
       }),
-      (error: unknown) => error instanceof Error && error.message === 'QUOTE_UNFULFILLABLE',
+      (error: unknown) => {
+        // The remedy is what tells an operator what to change; a bare error
+        // code is what made the original sandbox incident hard to diagnose.
+        const remedy = (error as { remedy?: string }).remedy;
+        return (
+          error instanceof Error &&
+          (error as { code?: string }).code === 'QUOTE_UNFULFILLABLE' &&
+          typeof remedy === 'string' &&
+          remedy.includes('region')
+        );
+      },
     );
   });
 

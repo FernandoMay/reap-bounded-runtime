@@ -114,6 +114,17 @@ function serializePurchase(record: PurchaseRecord): Record<string, unknown> {
   };
 }
 
+/**
+ * The fixture provider's extra capability.
+ *
+ * Kept as a separate structural type rather than importing MockProvider, so the
+ * server does not depend on the fixture implementation. The route that uses it
+ * is registered only in mock mode, so in sandbox it simply does not exist.
+ */
+interface MockSettler {
+  approveCheckout(checkoutId: string): Promise<unknown>;
+}
+
 export function buildServer(options: ServerOptions): FastifyInstance {
   const app = Fastify({ logger: { level: options.logLevel ?? 'info' } });
   const service = new PurchaseService(options.store, options.provider, options.mode);
@@ -263,6 +274,32 @@ export function buildServer(options: ServerOptions): FastifyInstance {
       return { purchase: serializePurchase(record) };
     },
   );
+
+  /**
+   * Simulate the human approving on the hosted page — mock mode only.
+   *
+   * This route is registered only when the provider is the fixture provider.
+   * Against a real Reap sandbox it does not exist, and that is the point: an
+   * "approve this charge" endpoint would be a backdoor that lets a caller
+   * settle a purchase with nobody present. In sandbox mode the only way to
+   * approve is for a person to click through Reap's own hosted page.
+   */
+  if (options.mode === 'mock') {
+    const approve = (options.provider as Partial<MockSettler>).approveCheckout;
+    if (typeof approve === 'function') {
+      const settle = approve.bind(options.provider);
+      app.post<{ Body: { checkoutId: string } }>('/api/mock/approve', async (request, reply) => {
+        const checkoutId = request.body?.checkoutId;
+        if (!checkoutId) {
+          return reply.code(400).send({
+            error: { code: 'INVALID_REQUEST', message: 'checkoutId is required' },
+          } satisfies ErrorEnvelope);
+        }
+        await settle(checkoutId);
+        return { approved: true, note: 'Fixture settlement. No provider was contacted.' };
+      });
+    }
+  }
 
   app.get<{ Params: { checkoutId: string } }>('/api/checkouts/:checkoutId', async (request, reply) => {
     const record = service.list(1000).find((p) => p.checkout?.id === request.params.checkoutId);
