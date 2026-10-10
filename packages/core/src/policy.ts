@@ -20,6 +20,7 @@ import { add, compare, isNegative, type Money } from './money.js';
 import { redactString } from './redact.js';
 import type {
   DenialCode,
+  LineItem,
   Merchant,
   Policy,
   PolicyDecision,
@@ -45,6 +46,11 @@ export interface PolicyContext {
   readonly policy: Policy;
   /** Total the purchase will cost, from a real quote. */
   readonly requestedAmount: Money;
+  /**
+   * The items being purchased. Needed for `variantAllowlist`, which is the only
+   * check that does not depend on a merchant name the provider may rebrand.
+   */
+  readonly items: readonly LineItem[];
   /** Merchant the quote came from. Absent means we cannot check the allowlist. */
   readonly merchant?: Merchant;
   /**
@@ -125,6 +131,18 @@ export function canonicalDomain(domain: string): string {
   return domain.trim().toLowerCase().replace(/^www\./, '');
 }
 
+/**
+ * Normalise a merchant name for allowlist comparison.
+ *
+ * Whitespace is collapsed and case is dropped so that "Blend  Station" and
+ * "blend station" are the same merchant. Dots are significant here: an entry
+ * containing one is treated as a domain, which is why `canonicalName` keeps
+ * them intact rather than stripping them.
+ */
+export function canonicalName(name: string): string {
+  return name.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
 /** Sum two amounts, or report that they are not commensurable. */
 function tryAdd(a: Money, b: Money): Money | null {
   return a.currency === b.currency ? add(a, b) : null;
@@ -192,27 +210,69 @@ function evaluatePolicyUnsafe(context: PolicyContext): PolicyDecision {
     },
   );
 
-  // 3. Merchant must be on the allowlist. No merchant known means no allow.
-  const allowlist = policy.merchantAllowlist ?? [];
-  const merchantDomain = merchant ? canonicalDomain(merchant.domain) : undefined;
-  const merchantAllowed =
-    merchantDomain !== undefined && allowlist.some((d) => canonicalDomain(d) === merchantDomain);
-  deny(
-    'merchant_allowed',
-    merchantAllowed,
-    merchantAllowed
-      ? `${merchantDomain} is permitted`
-      : merchantDomain === undefined
-        ? 'the merchant of this quote is unknown, so it cannot be checked against the allowlist'
-        : `${merchantDomain} is not on the allowlist`,
-    {
-      code: 'MERCHANT_NOT_ALLOWED',
-      message:
-        merchantDomain === undefined
-          ? 'the merchant of this quote could not be determined'
-          : `merchant ${merchantDomain} is not on the allowlist`,
-    },
-  );
+  // 3. What may be bought, and from whom. Two independent checks, because the
+  //    provider discloses a merchant name but no domain, and a name alone is not
+  //    a security boundary. Either one can be pinned; both run when configured.
+
+  const variantAllowlist = policy.variantAllowlist;
+  if (variantAllowlist !== undefined) {
+    const requestedIds = context.items.map((item) => item.variantId);
+    const permitted = new Set(variantAllowlist);
+    const offending = requestedIds.filter((id) => !permitted.has(id));
+    const allAllowed = offending.length === 0;
+    deny(
+      'variant_allowed',
+      allAllowed,
+      allAllowed
+        ? `all ${requestedIds.length} variant(s) are on the allowlist`
+        : `variant(s) not on the allowlist: ${offending.join(', ')}`,
+      allAllowed
+        ? undefined
+        : {
+            code: 'VARIANT_NOT_ALLOWED',
+            message: `the agent may not purchase variant(s): ${offending.join(', ')}`,
+          },
+    );
+  }
+
+  const allowlist = policy.merchantAllowlist;
+  const merchantName = merchant?.name ? canonicalName(merchant.name) : undefined;
+  const merchantDomain = merchant?.domain ? canonicalDomain(merchant.domain) : undefined;
+
+  if (allowlist === undefined) {
+    // No merchant allowlist configured at all is a deliberate operator choice.
+    deny('merchant_allowed', true, 'no merchant allowlist configured');
+  } else if (merchantName === undefined && merchantDomain === undefined) {
+    deny(
+      'merchant_allowed',
+      false,
+      'the merchant of this purchase is unknown, so it cannot be checked against the allowlist',
+      {
+        code: 'MERCHANT_NOT_ALLOWED',
+        message: 'the merchant of this purchase could not be determined',
+      },
+    );
+  } else {
+    const permittedEntries = allowlist.map((entry) =>
+      entry.includes('.') ? canonicalDomain(entry) : canonicalName(entry),
+    );
+    const merchantAllowed =
+      (merchantName !== undefined && permittedEntries.includes(merchantName)) ||
+      (merchantDomain !== undefined && permittedEntries.includes(merchantDomain));
+    deny(
+      'merchant_allowed',
+      merchantAllowed,
+      merchantAllowed
+        ? `merchant ${merchantName ?? merchantDomain} is permitted`
+        : `merchant ${merchantName ?? merchantDomain} is not on the allowlist`,
+      merchantAllowed
+        ? undefined
+        : {
+            code: 'MERCHANT_NOT_ALLOWED',
+            message: `merchant ${merchantName ?? merchantDomain} is not on the allowlist`,
+          },
+    );
+  }
 
   // 4. Per-purchase ceiling. An omitted ceiling means no per-purchase limit,
   //    which is only safe when a cumulative budget is also configured; the
@@ -318,6 +378,7 @@ function evaluatePolicyUnsafe(context: PolicyContext): PolicyDecision {
     'INVALID_REQUEST',
     'POLICY_UNAVAILABLE',
     'CURRENCY_NOT_ALLOWED',
+    'VARIANT_NOT_ALLOWED',
     'MERCHANT_NOT_ALLOWED',
     'AMOUNT_EXCEEDS_LIMIT',
     'BUDGET_EXCEEDED',

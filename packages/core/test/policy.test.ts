@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   canonicalDomain,
+  canonicalName,
   evaluatePolicy,
   fromMajor,
   validateIntent,
@@ -25,9 +26,13 @@ const policy = (overrides: Partial<Policy> = {}): Policy => ({
   ...overrides,
 });
 
+const pinnedPolicy = (variantIds: readonly string[], overrides: Partial<Policy> = {}): Policy =>
+  policy({ variantAllowlist: variantIds, merchantAllowlist: undefined, ...overrides });
+
 const context = (overrides: Partial<PolicyContext> = {}): PolicyContext => ({
   policy: policy(),
   requestedAmount: fromMajor('12.31', 'USD'),
+  items: intent().items,
   merchant,
   ...overrides,
 });
@@ -163,6 +168,60 @@ describe('evaluatePolicy — refusing', () => {
   test('fails closed when the allowlist is empty', () => {
     const decision = evaluatePolicy(context({ policy: policy({ merchantAllowlist: [] }) }));
     assert.equal(decision.allowed, false);
+  });
+
+  test('matches a merchant by name, which is all Reap discloses', () => {
+    // Reap's discovery responses expose merchant.name and no domain, so a
+    // name-only allowlist has to work on its own.
+    const decision = evaluatePolicy(
+      context({
+        policy: policy({ merchantAllowlist: ['Blend Station'] }),
+        merchant: { name: 'Blend Station' },
+      }),
+    );
+    assert.equal(decision.allowed, true);
+  });
+
+  test('matches a merchant name case- and whitespace-insensitively', () => {
+    const decision = evaluatePolicy(
+      context({
+        policy: policy({ merchantAllowlist: ['blend  station'] }),
+        merchant: { name: '  Blend   Station ' },
+      }),
+    );
+    assert.equal(decision.allowed, true);
+  });
+
+  test('a different merchant with a similar name is refused', () => {
+    const decision = evaluatePolicy(
+      context({
+        policy: policy({ merchantAllowlist: ['Blend Station'] }),
+        merchant: { name: 'Blend Station Outlet' },
+      }),
+    );
+    assert.equal(decision.allowed, false);
+    assert.equal(decision.allowed === false && decision.code, 'MERCHANT_NOT_ALLOWED');
+  });
+
+  test('an allowlist entry can pin a domain when the domain is known', () => {
+    const decision = evaluatePolicy(
+      context({
+        policy: policy({ merchantAllowlist: ['shop.blendstation.com'] }),
+        merchant: { name: 'Blend Station', domain: 'shop.blendstation.com' },
+      }),
+    );
+    assert.equal(decision.allowed, true);
+  });
+
+  test('a domain pin does not match a merchant known only by a different domain', () => {
+    const decision = evaluatePolicy(
+      context({
+        policy: policy({ merchantAllowlist: ['shop.blendstation.com'] }),
+        merchant: { name: 'Blend Station', domain: 'evil.example.com' },
+      }),
+    );
+    assert.equal(decision.allowed, false);
+    assert.equal(decision.allowed === false && decision.code, 'MERCHANT_NOT_ALLOWED');
   });
 
   test('refuses a currency outside the permitted set', () => {
@@ -308,16 +367,43 @@ describe('evaluatePolicy — never throws', () => {
     assert.equal(decision.allowed === false && decision.code, 'POLICY_UNAVAILABLE');
   });
 
-  test('denies rather than throwing on a structurally broken context', () => {
-    // A policy that survived deserialisation with a non-string domain: the
-    // allowlist comparison cannot run, so the engine must deny.
+  test('denies rather than throwing on a structurally broken merchant', () => {
+    // A merchant that survived deserialisation with a non-string domain: the
+    // allowlist comparison cannot run. The merchant rule must deny on its own
+    // merits rather than relying on an exception escaping the engine.
     const decision = evaluatePolicy({
       policy: policy(),
       requestedAmount: fromMajor('1.00', 'USD'),
+      items: intent().items,
       merchant: { name: 'X', domain: null as unknown as string },
     });
     assert.equal(decision.allowed, false);
+    assert.equal(decision.allowed === false && decision.code, 'MERCHANT_NOT_ALLOWED');
+  });
+
+  test('denies rather than throwing on a structurally broken context', () => {
+    // `items` lost its array shape somewhere between storage and evaluation.
+    // The variant check cannot run, so the engine must deny rather than let a
+    // TypeError escape into a request handler.
+    const decision = evaluatePolicy({
+      policy: pinnedPolicy(['var_ok']),
+      requestedAmount: fromMajor('1.00', 'USD'),
+      items: null as unknown as ReturnType<typeof intent>['items'],
+      merchant: undefined,
+    });
+    assert.equal(decision.allowed, false);
     assert.equal(decision.allowed === false && decision.code, 'POLICY_UNAVAILABLE');
+  });
+
+  test('reports a variant outside the allowlist rather than throwing on its shape', () => {
+    const decision = evaluatePolicy({
+      policy: pinnedPolicy(['var_ok']),
+      requestedAmount: fromMajor('1.00', 'USD'),
+      items: [{ variantId: null as unknown as string, productId: 'p', productName: 'n', quantity: 1 }],
+      merchant: undefined,
+    });
+    assert.equal(decision.allowed, false);
+    assert.equal(decision.allowed === false && decision.code, 'VARIANT_NOT_ALLOWED');
   });
 
   test('the fail-closed message does not leak the raw fault', () => {
@@ -331,9 +417,95 @@ describe('evaluatePolicy — never throws', () => {
   });
 });
 
+describe('evaluatePolicy — variant allowlist', () => {
+  // A merchant name is not a security boundary: nothing in a provider response
+  // authenticates that the same name means the same merchant twice. Pinning the
+  // exact purchasable artifacts removes the question entirely.
+
+  test('allows a purchase made entirely of pinned variants', () => {
+    const decision = evaluatePolicy(
+      context({
+        policy: pinnedPolicy(['var_1']),
+        items: [{ variantId: 'var_1', productId: 'p', productName: 'n', quantity: 1 }],
+        merchant: undefined,
+      }),
+    );
+    assert.equal(decision.allowed, true);
+  });
+
+  test('refuses a variant outside the pin', () => {
+    const decision = evaluatePolicy(
+      context({
+        policy: pinnedPolicy(['var_1']),
+        items: [{ variantId: 'var_evil', productId: 'p', productName: 'n', quantity: 1 }],
+        merchant: undefined,
+      }),
+    );
+    assert.equal(decision.allowed, false);
+    assert.equal(decision.allowed === false && decision.code, 'VARIANT_NOT_ALLOWED');
+  });
+
+  test('refuses the whole purchase when only one of several items is pinned', () => {
+    // Partial fulfilment would buy something the operator never authorised.
+    const decision = evaluatePolicy(
+      context({
+        policy: pinnedPolicy(['var_1']),
+        items: [
+          { variantId: 'var_1', productId: 'p', productName: 'n', quantity: 1 },
+          { variantId: 'var_sneaky', productId: 'p2', productName: 'n2', quantity: 1 },
+        ],
+        merchant: undefined,
+      }),
+    );
+    assert.equal(decision.allowed, false);
+    assert.equal(decision.allowed === false && decision.code, 'VARIANT_NOT_ALLOWED');
+  });
+
+  test('refuses everything when the pin is empty', () => {
+    const decision = evaluatePolicy(
+      context({
+        policy: pinnedPolicy([]),
+        items: [{ variantId: 'var_1', productId: 'p', productName: 'n', quantity: 1 }],
+        merchant: undefined,
+      }),
+    );
+    assert.equal(decision.allowed, false);
+  });
+
+  test('the pin is checked independently of the merchant allowlist', () => {
+    // Merchant known and permitted, variant not pinned: still refused.
+    const decision = evaluatePolicy(
+      context({
+        policy: pinnedPolicy(['var_other'], { merchantAllowlist: ['Blend Station'] }),
+        items: [{ variantId: 'var_1', productId: 'p', productName: 'n', quantity: 1 }],
+        merchant: { name: 'Blend Station' },
+      }),
+    );
+    assert.equal(decision.allowed, false);
+    assert.equal(decision.allowed === false && decision.code, 'VARIANT_NOT_ALLOWED');
+  });
+
+  test('a missing merchant allowlist is an operator choice, not a failure', () => {
+    const decision = evaluatePolicy(
+      context({
+        policy: policy({ merchantAllowlist: undefined }),
+        merchant: { name: 'Anything' },
+      }),
+    );
+    assert.equal(decision.allowed, true);
+    assert.ok(decision.outcomes.some((o) => o.rule === 'merchant_allowed' && o.passed));
+  });
+});
+
 describe('canonicalDomain', () => {
   test('lowercases and strips a leading www', () => {
     assert.equal(canonicalDomain('  WWW.Example.COM '), 'example.com');
     assert.equal(canonicalDomain('shop.example.com'), 'shop.example.com');
+  });
+});
+
+describe('canonicalName', () => {
+  test('collapses whitespace and drops case', () => {
+    assert.equal(canonicalName('  Blend   Station  '), 'blend station');
   });
 });

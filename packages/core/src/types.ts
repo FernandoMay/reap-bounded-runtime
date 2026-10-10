@@ -9,11 +9,19 @@
 
 import type { Money } from './money.js';
 
-/** A merchant, as Reap resolves it during catalog search or quoting. */
+/**
+ * A merchant, as far as the provider discloses it.
+ *
+ * Reap's discovery responses expose only `merchant.name`. The quote response
+ * exposes no merchant at all. `domain` is therefore populated only when the
+ * runtime already knows it — which, today, is only for merchants the operator
+ * configured by hand. Treating a name as if it were a verified domain would make
+ * an allowlist look enforced while an untrusted party could imitate it.
+ */
 export interface Merchant {
   readonly name: string;
-  /** Canonical DNS domain, e.g. `shop.example.com`. No scheme, no `www.`. */
-  readonly domain: string;
+  /** Canonical DNS domain, when known. Never inferred from a name. */
+  readonly domain?: string;
   /** ISO 3166-1 alpha-2, when known. */
   readonly country?: string;
 }
@@ -67,16 +75,48 @@ export interface PurchaseIntent {
  * Every field is a ceiling, never a target. A policy grants permission; it does
  * not instruct a purchase.
  */
+/**
+ * LIMITATION — merchant names are not authenticated.
+ *
+ * A merchant name arrives as an unsigned string from a provider response. Two
+ * different merchants can present the same name, and a compromised or confused
+ * catalog can present any name. Matching an allowlist entry against a name is
+ * therefore a usability control that stops ordinary mistakes, not a security
+ * boundary. Treat it as such: it will stop an agent from wandering into an
+ * unrelated shop, and it will not stop a determined impersonation.
+ *
+ * `variantAllowlist` is the control to reach for when the distinction matters.
+ * Variant ids are opaque provider-issued identifiers that cannot be re-spelled
+ * by a merchant, so pinning them is a genuine constraint on what may be bought.
+ *
+ * The same reasoning applies to `domain`: it is only populated when the
+ * operator configured it, never inferred from a name.
+ */
 export interface Policy {
   /** Maximum total for a single purchase, inclusive of shipping and tax. */
   readonly maxAmountPerPurchase?: Money;
   /** Currencies the agent may operate in. */
   readonly allowedCurrencies?: readonly string[];
   /**
-   * Canonical merchant domains the agent may buy from. An empty list means no
-   * merchant is permitted — fail closed, not fail open.
+   * Merchants the agent may buy from, matched against the merchant name and,
+   * when known, its canonical domain. An empty list means no merchant is
+   * permitted — fail closed, not fail open.
+   *
+   * Names are compared case-insensitively. Reap discloses merchant names but not
+   * domains, so a name-only allowlist is the strongest check available against
+   * provider data; see `variantAllowlist` for a stricter alternative.
    */
   readonly merchantAllowlist?: readonly string[];
+  /**
+   * Exact variant ids the agent may purchase. When present, a purchase must
+   * consist solely of these variants, regardless of the merchant allowlist.
+   *
+   * This exists because a merchant name is not a security boundary: nothing in
+   * the provider's response authenticates that "Blend Station" is the same
+   * merchant across two calls. Pinning the exact purchasable artifacts an agent
+   * may buy removes the question.
+   */
+  readonly variantAllowlist?: readonly string[];
   /** Cumulative ceiling across all purchases in `budgetWindow`. */
   readonly budget?: Money;
   readonly budgetWindow?: 'DAY' | 'WEEK' | 'MONTH' | 'LIFETIME';
@@ -89,6 +129,7 @@ export type DenialCode =
   | 'AMOUNT_EXCEEDS_LIMIT'
   | 'CURRENCY_NOT_ALLOWED'
   | 'MERCHANT_NOT_ALLOWED'
+  | 'VARIANT_NOT_ALLOWED'
   | 'BUDGET_EXCEEDED'
   | 'INVALID_REQUEST'
   | 'POLICY_UNAVAILABLE';
